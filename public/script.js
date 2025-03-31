@@ -1,8 +1,8 @@
 // Global variables
 let currentUser = null;
 let videoStream = null;
-let capturedFaceData = null;
 let currentLocation = null;
+let faceDetectionInterval = null;
 
 // DOM Elements
 const loginForm = document.getElementById('loginForm');
@@ -34,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (window.location.pathname.includes('attendance.html') || 
       window.location.pathname.includes('settings.html')) {
     initWebcam();
+    startFaceDetection();
   }
 
   // Get geolocation if on attendance page
@@ -42,33 +43,54 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// Start face detection
+function startFaceDetection() {
+  faceDetectionInterval = setInterval(async () => {
+    if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoElement.videoWidth;
+      canvas.height = videoElement.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      
+      // Show face detection in progress
+      if (captureBtn) {
+        captureBtn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Detecting Face...';
+        captureBtn.disabled = true;
+      }
+    }
+  }, 1000);
+}
+
+// Stop face detection
+function stopFaceDetection() {
+  if (faceDetectionInterval) {
+    clearInterval(faceDetectionInterval);
+    faceDetectionInterval = null;
+  }
+}
+
 // Authentication functions
-function checkAuth() {
+async function checkAuth() {
   const token = localStorage.getItem('token');
   if (token && !window.location.pathname.includes('login.html')) {
-    // Verify token with backend
-    fetch('/api/verify', {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    .then(response => {
-      if (!response.ok) {
-        localStorage.removeItem('token');
-        window.location.href = '/login.html';
-      }
-      return response.json();
-    })
-    .then(data => {
+    try {
+      const response = await fetch('/api/verify', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (!response.ok) throw new Error('Invalid token');
+      
+      const data = await response.json();
       currentUser = data.user;
+      
       if (document.getElementById('userEmail')) {
         document.getElementById('userEmail').textContent = currentUser.email;
       }
-    })
-    .catch(() => {
+    } catch (error) {
       localStorage.removeItem('token');
       window.location.href = '/login.html';
-    });
+    }
   } else if (!token && !window.location.pathname.includes('login.html')) {
     window.location.href = '/login.html';
   }
@@ -83,9 +105,7 @@ function setupLoginForm() {
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
 
@@ -94,151 +114,107 @@ function setupLoginForm() {
         localStorage.setItem('token', data.token);
         window.location.href = '/dashboard.html';
       } else {
-        alert(data.message || 'Login failed');
+        showAlert('error', data.message || 'Login failed');
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('An error occurred during login');
+      showAlert('error', 'An error occurred during login');
     }
-  });
-}
-
-function setupRegisterLink() {
-  registerLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    // Show registration modal or redirect to registration page
-    alert('Registration functionality to be implemented');
   });
 }
 
 // Face Recognition functions
 function initWebcam() {
-  navigator.mediaDevices.getUserMedia({ video: true })
-    .then(stream => {
-      videoStream = stream;
-      videoElement.srcObject = stream;
-    })
-    .catch(err => {
-      console.error('Error accessing webcam:', err);
-      alert('Could not access webcam. Please check permissions.');
-    });
-}
-
-function setupFaceCapture() {
-  captureBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    captureFace();
+  navigator.mediaDevices.getUserMedia({ 
+    video: { width: 640, height: 480, facingMode: 'user' }
+  }).then(stream => {
+    videoStream = stream;
+    videoElement.srcObject = stream;
+  }).catch(err => {
+    console.error('Webcam error:', err);
+    showAlert('error', 'Could not access webcam. Please check permissions.');
   });
 }
 
-function captureFace() {
-  const context = canvasElement.getContext('2d');
-  canvasElement.width = videoElement.videoWidth;
-  canvasElement.height = videoElement.videoHeight;
-  context.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-  
-  // Convert canvas to base64 image
-  capturedFaceData = canvasElement.toDataURL('image/jpeg');
-  
-  // Enable submit button
-  submitBtn.disabled = false;
-  alert('Face captured successfully!');
-}
-
-// Geolocation functions
-function getGeolocation() {
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      position => {
-        currentLocation = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
-        };
-        locationStatus.textContent = 'Location acquired';
-        coordinates.classList.remove('hidden');
-        latitude.textContent = currentLocation.latitude.toFixed(6);
-        longitude.textContent = currentLocation.longitude.toFixed(6);
-      },
-      error => {
-        console.error('Geolocation error:', error);
-        locationStatus.textContent = 'Location access denied';
-      }
+async function captureFace() {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = videoElement.videoWidth;
+    canvas.height = videoElement.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+    
+    const blob = await new Promise(resolve => 
+      canvas.toBlob(resolve, 'image/jpeg', 0.9)
     );
-  } else {
-    locationStatus.textContent = 'Geolocation not supported';
+    
+    return blob;
+  } catch (error) {
+    console.error('Face capture error:', error);
+    throw error;
   }
 }
 
-// Attendance submission
-function setupAttendanceSubmission() {
-  submitBtn.addEventListener('click', async (e) => {
-    e.preventDefault();
+// Attendance functions
+async function submitAttendance() {
+  try {
+    showLoader(submitBtn, 'Processing...');
     
-    if (!capturedFaceData) {
-      alert('Please capture your face first');
-      return;
-    }
-    
-    if (!currentLocation) {
-      alert('Could not determine your location');
-      return;
-    }
+    const faceBlob = await captureFace();
+    const formData = new FormData();
+    formData.append('faceImage', faceBlob, 'face.jpg');
+    formData.append('latitude', currentLocation.latitude);
+    formData.append('longitude', currentLocation.longitude);
 
-    try {
-      const response = await fetch('/api/attendance', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          faceData: capturedFaceData,
-          latitude: currentLocation.latitude,
-          longitude: currentLocation.longitude
-        })
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        alert('Attendance recorded successfully!');
-        window.location.href = '/dashboard.html';
-      } else {
-        alert(data.message || 'Attendance recording failed');
-      }
-    } catch (error) {
-      console.error('Attendance error:', error);
-      alert('An error occurred while recording attendance');
-    }
-  });
-}
-
-// Settings page functions
-function setupTabs() {
-  const tabButtons = document.querySelectorAll('.tab-btn');
-  const tabContents = document.querySelectorAll('.tab-content');
-
-  tabButtons.forEach(button => {
-    button.addEventListener('click', () => {
-      // Remove active class from all buttons and contents
-      tabButtons.forEach(btn => {
-        btn.classList.remove('border-blue-500', 'text-blue-600');
-        btn.classList.add('border-transparent', 'text-gray-500');
-      });
-      tabContents.forEach(content => {
-        content.classList.remove('active');
-      });
-
-      // Add active class to clicked button and corresponding content
-      button.classList.add('border-blue-500', 'text-blue-600');
-      button.classList.remove('border-transparent', 'text-gray-500');
-      
-      const target = button.id.replace('Tab', 'Content');
-      document.getElementById(target).classList.add('active');
+    const response = await fetch('/api/attendance', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: formData
     });
-  });
+
+    const data = await response.json();
+    if (response.ok) {
+      showAlert('success', data.message);
+      setTimeout(() => window.location.href = '/dashboard.html', 1500);
+    } else {
+      showAlert('error', data.error || 'Attendance failed');
+    }
+  } catch (error) {
+    console.error('Attendance error:', error);
+    showAlert('error', 'Failed to submit attendance');
+  } finally {
+    hideLoader(submitBtn, 'Submit Attendance');
+  }
 }
 
-// Logout function
+// Helper functions
+function showAlert(type, message) {
+  const alertDiv = document.createElement('div');
+  alertDiv.className = `fixed top-4 right-4 p-4 rounded-md shadow-lg ${
+    type === 'error' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+  }`;
+  alertDiv.textContent = message;
+  document.body.appendChild(alertDiv);
+  
+  setTimeout(() => {
+    alertDiv.classList.add('opacity-0', 'transition-opacity', 'duration-500');
+    setTimeout(() => alertDiv.remove(), 500);
+  }, 3000);
+}
+
+function showLoader(button, text) {
+  button.disabled = true;
+  button.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-2"></i>${text}`;
+}
+
+function hideLoader(button, text) {
+  button.disabled = false;
+  button.textContent = text;
+}
+
+// Initialize on page load
 if (document.getElementById('logoutBtn')) {
   document.getElementById('logoutBtn').addEventListener('click', () => {
     localStorage.removeItem('token');
