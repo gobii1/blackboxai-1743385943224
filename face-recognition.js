@@ -1,52 +1,57 @@
-const cv = require('opencv4nodejs');
+const tf = require('@tensorflow/tfjs-node');
+const faceapi = require('face-api.js');
+const canvas = require('canvas');
+const { Canvas, Image, ImageData } = canvas;
+const fs = require('fs');
 const path = require('path');
 
-// Load Haar Cascade classifier
-const faceClassifier = new cv.CascadeClassifier(cv.HAAR_FRONTALFACE_ALT2);
+// Configure face-api.js to use canvas
+faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
+
+// Load models
+async function loadModels() {
+  const modelPath = path.join(__dirname, 'models');
+  await faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath);
+  await faceapi.nets.faceLandmark68Net.loadFromDisk(modelPath);
+  await faceapi.nets.faceRecognitionNet.loadFromDisk(modelPath);
+}
+
+// Initialize models
+loadModels().catch(err => console.error('Error loading models:', err));
 
 // Function to detect and extract face
-function detectFace(imagePath) {
+async function detectFace(imagePath) {
   try {
     // Read image
-    const img = cv.imread(imagePath);
+    const img = await canvas.loadImage(imagePath);
     
-    // Convert to grayscale
-    const grayImg = img.bgrToGray();
+    // Detect faces
+    const detections = await faceapi.detectAllFaces(img)
+      .withFaceLandmarks()
+      .withFaceDescriptors();
     
-    // Detect faces using Haar Cascade
-    const faces = faceClassifier.detectMultiScale(grayImg);
-    
-    if (faces.objects.length === 0) {
+    if (detections.length === 0) {
       throw new Error('No face detected');
     }
     
-    // Get the first face
-    const faceRect = faces.objects[0];
+    // Get the first face descriptor
+    const descriptor = detections[0].descriptor;
     
-    // Crop face
-    const face = img.getRegion(faceRect);
-    
-    // Resize to standard size
-    const resizedFace = face.resize(100, 100);
-    
-    // Convert to buffer
-    const faceBuffer = cv.imencode('.jpg', resizedFace).toString('base64');
-    
-    return faceBuffer;
+    return descriptor;
   } catch (error) {
     throw error;
   }
 }
 
-// Function to compare faces (simple Euclidean distance)
-function compareFaces(face1, face2) {
-  // Implementation would use more sophisticated comparison
-  // This is a placeholder for actual face comparison logic
-  const threshold = 0.6;
-  return Math.random() > threshold; // Replace with actual comparison
+// Function to compare faces using Euclidean distance
+function compareFaces(descriptor1, descriptor2) {
+  const threshold = 0.6; // Similarity threshold
+  const distance = faceapi.euclideanDistance(descriptor1, descriptor2);
+  return distance <= threshold;
 }
 
 module.exports = {
   detectFace,
-  compareFaces
+  compareFaces,
+  loadModels
 };
